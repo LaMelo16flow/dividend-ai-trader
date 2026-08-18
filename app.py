@@ -7,14 +7,6 @@ import pandas as pd
 import streamlit as st
 
 from dividend_ai.backtest import build_strategy_universes, compare_strategies
-from dividend_ai.broker import (
-    close_position,
-    fetch_account,
-    fetch_positions,
-    fetch_recent_orders,
-    get_client,
-    submit_buy,
-)
 from dividend_ai.config import BACKTEST_UNIVERSE, CUT_RISK_TRAINING_UNIVERSE, DEFAULT_UNIVERSE, GRADE_BANDS, WEIGHTS
 from dividend_ai.cut_risk import (
     DEFAULT_MODEL_PATH as CUT_RISK_MODEL_PATH,
@@ -23,17 +15,6 @@ from dividend_ai.cut_risk import (
     predict_cut_risk as cr_predict_cut_risk,
     save_model as cr_save_model,
     train_model as cr_train_model,
-)
-from dividend_ai.data import fetch_stock_data
-from dividend_ai.paper import (
-    DEFAULT_STARTING_CASH,
-    buy as paper_buy,
-    get_positions as paper_get_positions,
-    get_summary as paper_get_summary,
-    load_account as paper_load_account,
-    reset_account as paper_reset_account,
-    save_account as paper_save_account,
-    sell as paper_sell,
 )
 from dividend_ai.questrade import (
     authenticate as qt_authenticate,
@@ -104,32 +85,7 @@ with st.sidebar:
     track_file = st.text_input("Tracking log file", "picks_log.csv")
 
     st.divider()
-    st.header("Paper Account (no signup)")
-    paper_file = st.text_input("Paper account file", "paper_account.json")
-    paper_starting_cash = st.number_input(
-        "Starting cash (new accounts only)", min_value=100.0,
-        value=DEFAULT_STARTING_CASH, step=1000.0,
-    )
-    if st.button("♻️ Reset paper account", use_container_width=True):
-        paper_reset_account(paper_file, paper_starting_cash)
-        st.success(f"Reset {paper_file} to ${paper_starting_cash:,.2f} cash.")
-
-    st.divider()
-    st.header("Broker (Alpaca Paper) — optional")
-    alpaca_key = st.text_input(
-        "API Key ID", value=os.environ.get("ALPACA_API_KEY_ID", ""), type="password"
-    )
-    alpaca_secret = st.text_input(
-        "Secret Key", value=os.environ.get("ALPACA_SECRET_KEY", ""), type="password"
-    )
-    st.caption(
-        "Only needed for the Alpaca tab. Free keys at alpaca.markets → Paper Trading. "
-        "Simulated money only — never live. Keys are used for this session only, never "
-        "written to disk. The Paper Trade tab above needs no signup or keys at all."
-    )
-
-    st.divider()
-    st.header("Questrade — optional")
+    st.header("Broker — Questrade")
     qt_refresh_token = st.text_input(
         "Refresh token", value="", type="password",
         help="Generate from my.questrade.com (or practicelogin.questrade.com for a "
@@ -137,15 +93,15 @@ with st.sidebar:
     )
     qt_token_file = st.text_input("Token cache file", "questrade_token.json")
     st.caption(
-        "Only needed for the Questrade tab. Each token exchange rotates the refresh "
-        "token, so the new one is cached in the file above — reuse it across runs "
-        "instead of re-pasting. Whether this hits a practice or live account depends "
-        "entirely on which token you generated; this app never chooses that for you."
+        "This app trades exclusively through Questrade. Each token exchange rotates "
+        "the refresh token, so the new one is cached in the file above — reuse it "
+        "across runs instead of re-pasting. Whether this hits a practice or live "
+        "account depends entirely on which token you generated; this app never "
+        "chooses that for you — double-check before connecting."
     )
 
-tab_screen, tab_track, tab_paper, tab_alpaca, tab_questrade, tab_backtest, tab_cutrisk = st.tabs(
-    ["📊 Screener", "📈 Track Picks", "🧪 Paper Trade", "💼 Alpaca (Paper API)", "🇨🇦 Questrade",
-     "🔬 Backtest", "🎲 Cut Risk (ML)"]
+tab_screen, tab_trade, tab_track, tab_backtest, tab_cutrisk = st.tabs(
+    ["📊 Screener", "💼 Trade (Questrade)", "📈 Track Picks", "🔬 Backtest", "🎲 Cut Risk (ML)"]
 )
 
 with tab_screen:
@@ -296,198 +252,8 @@ with tab_track:
                 if not valid.empty:
                     st.metric("Average return across tracked picks", f"{valid.mean():+.2f}%")
 
-with tab_paper:
-    st.subheader("Paper Trade — Local Simulator")
-    st.caption(
-        "No signup, no API keys, no real broker. A virtual cash balance tracked in a "
-        "local file, priced with live yfinance data — same source the screener uses."
-    )
-
-    account = paper_load_account(paper_file, paper_starting_cash)
-    held_tickers = list(account["holdings"].keys())
-
-    price_lookup = {}
-    if held_tickers:
-        with st.spinner(f"Fetching current prices for {len(held_tickers)} holding(s)..."):
-            price_lookup = {t: fetch_stock_data(t).price for t in held_tickers}
-
-    summary = paper_get_summary(account, price_lookup)
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Cash", f"${summary['cash']:,.2f}")
-    c2.metric("Holdings value", f"${summary['holdings_value']:,.2f}")
-    c3.metric("Portfolio value", f"${summary['portfolio_value']:,.2f}")
-    c4.metric(
-        "Total P/L",
-        f"${summary['total_pl']:,.2f}",
-        delta=f"{summary['total_pl_pct']:+.2f}%",
-    )
-
-    st.subheader("Positions")
-    positions = paper_get_positions(account, price_lookup)
-    if positions:
-        pos_df = pd.DataFrame([{
-            "Ticker": p["ticker"],
-            "Qty": p["qty"],
-            "Avg Entry": p["avg_entry_price"],
-            "Current": p["current_price"],
-            "Market Value": p["market_value"],
-            "Unrealized P/L": p["unrealized_pl"],
-            "Unrealized P/L %": p["unrealized_plpc"],
-        } for p in positions])
-        st.dataframe(
-            pos_df, hide_index=True, use_container_width=True,
-            column_config={
-                "Unrealized P/L %": st.column_config.NumberColumn(format="%.2f%%"),
-                "Avg Entry": st.column_config.NumberColumn(format="$%.2f"),
-                "Current": st.column_config.NumberColumn(format="$%.2f"),
-                "Market Value": st.column_config.NumberColumn(format="$%.2f"),
-                "Unrealized P/L": st.column_config.NumberColumn(format="$%.2f"),
-            },
-        )
-        sell_col1, sell_col2 = st.columns([2, 1])
-        with sell_col1:
-            sell_ticker = st.selectbox("Sell a position", ["—"] + [p["ticker"] for p in positions])
-        with sell_col2:
-            if sell_ticker != "—" and st.button(f"🔴 Sell all {sell_ticker}"):
-                err = paper_sell(account, sell_ticker, price=price_lookup.get(sell_ticker))
-                if err:
-                    st.error(err)
-                else:
-                    paper_save_account(account, paper_file)
-                    st.success(f"Sold entire {sell_ticker} position.")
-                    st.rerun()
-    else:
-        st.info("No open positions.")
-
-    st.subheader("Buy From Screener Picks")
-    paper_shown = st.session_state.get("shown")
-    paper_picks = [r for r in paper_shown if not r.error] if paper_shown else []
-    if not paper_picks:
-        st.info("Run a screen in the **Screener** tab first to get picks to trade.")
-    else:
-        paper_dollar_amount = st.number_input(
-            "Dollar amount per pick", min_value=1.0, value=1000.0, step=100.0, key="paper_dollar_amount"
-        )
-        paper_picks_to_buy = st.multiselect(
-            "Picks to buy", [r.ticker for r in paper_picks],
-            default=[r.ticker for r in paper_picks], key="paper_picks_to_buy",
-        )
-        buy_clicked = st.button(
-            f"🛒 Buy {len(paper_picks_to_buy)} pick(s) — ${paper_dollar_amount:,.0f} each",
-            type="primary", disabled=not paper_picks_to_buy, key="paper_buy_button",
-        )
-        if buy_clicked:
-            price_by_ticker = {r.ticker: r.raw.get("price") for r in paper_picks}
-            for ticker in paper_picks_to_buy:
-                err = paper_buy(account, ticker, paper_dollar_amount, price_by_ticker.get(ticker))
-                if err:
-                    st.error(f"{ticker}: {err}")
-                else:
-                    st.success(f"{ticker}: bought ${paper_dollar_amount:,.0f} at ${price_by_ticker.get(ticker):.2f}.")
-            paper_save_account(account, paper_file)
-            st.rerun()
-
-    st.subheader("Transaction History")
-    if account["transactions"]:
-        st.dataframe(
-            pd.DataFrame(list(reversed(account["transactions"]))),
-            hide_index=True, use_container_width=True,
-        )
-    else:
-        st.info("No transactions yet.")
-
-with tab_alpaca:
-    st.subheader("Paper Trading (Alpaca)")
-    st.caption(
-        "Simulated money, real market mechanics via Alpaca's paper-trading API. "
-        "This never places live/real-money trades."
-    )
-
-    if not alpaca_key or not alpaca_secret:
-        st.info("Enter your Alpaca **paper trading** API keys in the sidebar to connect.")
-    else:
-        client = get_client(alpaca_key, alpaca_secret)
-        account = fetch_account(client)
-
-        if account.error:
-            st.error(f"Couldn't connect to Alpaca: {account.error}")
-        else:
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Cash", f"${account.cash:,.2f}")
-            c2.metric("Buying power", f"${account.buying_power:,.2f}")
-            c3.metric("Portfolio value", f"${account.portfolio_value:,.2f}")
-            c4.metric("Equity", f"${account.equity:,.2f}")
-
-            st.subheader("Positions")
-            positions, pos_err = fetch_positions(client)
-            if pos_err:
-                st.error(pos_err)
-            elif positions:
-                pos_df = pd.DataFrame([{
-                    "Ticker": p.ticker,
-                    "Qty": p.qty,
-                    "Avg Entry": p.avg_entry_price,
-                    "Current": p.current_price,
-                    "Market Value": p.market_value,
-                    "Unrealized P/L": p.unrealized_pl,
-                    "Unrealized P/L %": p.unrealized_plpc,
-                } for p in positions])
-                st.dataframe(
-                    pos_df, hide_index=True, use_container_width=True,
-                    column_config={
-                        "Unrealized P/L %": st.column_config.NumberColumn(format="%.2f%%"),
-                        "Avg Entry": st.column_config.NumberColumn(format="$%.2f"),
-                        "Current": st.column_config.NumberColumn(format="$%.2f"),
-                        "Market Value": st.column_config.NumberColumn(format="$%.2f"),
-                        "Unrealized P/L": st.column_config.NumberColumn(format="$%.2f"),
-                    },
-                )
-                close_ticker = st.selectbox("Close a position", ["—"] + [p.ticker for p in positions])
-                if close_ticker != "—" and st.button(f"🔴 Close {close_ticker} position"):
-                    result = close_position(client, close_ticker)
-                    if result.error:
-                        st.error(result.error)
-                    else:
-                        st.success(f"Submitted close order for {close_ticker} ({result.status}).")
-            else:
-                st.info("No open positions.")
-
-            st.subheader("Buy From Screener Picks")
-            trade_shown = st.session_state.get("shown")
-            trade_picks = [r for r in trade_shown if not r.error] if trade_shown else []
-            if not trade_picks:
-                st.info("Run a screen in the **Screener** tab first to get picks to trade.")
-            else:
-                dollar_amount = st.number_input(
-                    "Dollar amount per pick", min_value=1.0, value=100.0, step=25.0
-                )
-                picks_to_buy = st.multiselect(
-                    "Picks to buy", [r.ticker for r in trade_picks],
-                    default=[r.ticker for r in trade_picks],
-                )
-                buy_clicked = st.button(
-                    f"🛒 Buy {len(picks_to_buy)} pick(s) — paper, ${dollar_amount:,.0f} each",
-                    type="primary", disabled=not picks_to_buy,
-                )
-                if buy_clicked:
-                    for ticker in picks_to_buy:
-                        result = submit_buy(client, ticker, dollar_amount)
-                        if result.error:
-                            st.error(f"{ticker}: {result.error}")
-                        else:
-                            st.success(f"{ticker}: order {result.status}")
-
-            st.subheader("Recent Orders")
-            orders, order_err = fetch_recent_orders(client)
-            if order_err:
-                st.error(order_err)
-            elif orders:
-                st.dataframe(pd.DataFrame(orders), hide_index=True, use_container_width=True)
-            else:
-                st.info("No orders yet.")
-
-with tab_questrade:
-    st.subheader("Questrade")
+with tab_trade:
+    st.subheader("Trade — Questrade")
     st.caption(
         "Connects to whichever Questrade account issued your refresh token — practice "
         "or live, this app can't tell the difference and doesn't choose for you. "
