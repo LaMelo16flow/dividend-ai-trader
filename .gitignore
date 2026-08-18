@@ -1,0 +1,18 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Local state files — contain account/session data, never commit
+paper_account.json
+questrade_token.json
+picks_log.csv
+results.csv
+
+# Generated/cached — regenerate with the app, don't commit
+.cache/
+cut_risk_model.joblib
+cut_risk_model_metrics.json
+
+# Local secrets if you ever add a Streamlit secrets file
+.streamlit/secrets.toml
